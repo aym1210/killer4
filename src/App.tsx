@@ -209,8 +209,8 @@ export default function Connect4() {
 
   const statusMsg = () => {
     if (result === "draw") return "DRAW";
-    if (result && result !== "draw" && result.winner === HUMAN) return "YOU WIN! 🎉";
-    if (result && result !== "draw" && result.winner === BOT) return "ANNIHILATED 💀";
+if (result && typeof result === "object" && result.winner === HUMAN) return "YOU WIN! 🎉";
+if (result && typeof result === "object" && result.winner === BOT) return "ANNIHILATED 💀";
     if (thinking) return "THINKING...";
     return "YOUR MOVE";
   };
@@ -318,9 +318,9 @@ export default function Connect4() {
 
       {result&&(
         <div onClick={reset} style={{position:"fixed",inset:0,zIndex:50,background:"rgba(0,0,0,0.72)",backdropFilter:"blur(6px)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
-          <div style={{position:"absolute",width:"300px",height:"300px",borderRadius:"50%",background:`radial-gradient(circle,${result==="draw"?"#f59e0b":result!=="draw"&&result.winner===HUMAN?"#22c55e":"#ef4444"}33 0%,transparent 70%)`,filter:"blur(30px)"}}/>
-          <div style={{fontSize:"clamp(56px,12vw,110px)",fontWeight:900,letterSpacing:"0.08em",textTransform:"uppercase",color:result==="draw"?"#fbbf24":result!=="draw"&&result.winner===HUMAN?"#4ade80":"#f87171",textShadow:"0 0 60px currentColor,0 0 120px currentColor",animation:"popIn 0.45s cubic-bezier(0.34,1.56,0.64,1) both",position:"relative"}}>
-            {result==="draw"?"DRAW":result!=="draw"&&result.winner===HUMAN?"WIN!":"LOSE"}
+          <div style={{position:"absolute",width:"300px",height:"300px",borderRadius:"50%",background:`radial-gradient(circle,${result==="draw"?"#f59e0b":typeof result==="object"&&result.winner===HUMAN?"#22c55e":"#ef4444"}33 ...`
+color:result==="draw"?"#fbbf24":typeof result==="object"&&result.winner===HUMAN?"#4ade80":"#f87171"
+{result==="draw"?"DRAW":typeof result==="object"&&result.winner===HUMAN?"WIN!":"LOSE"}
           </div>
           <div style={{color:"#ffffff33",fontSize:"11px",marginTop:"16px",letterSpacing:"0.3em",position:"relative"}}>TAP TO PLAY AGAIN</div>
         </div>
