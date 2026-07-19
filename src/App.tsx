@@ -5,11 +5,23 @@ const COLS = 7;
 const EMPTY = 0;
 const HUMAN = 1;
 const BOT = 2;
-const DEPTH = 11;
 
 type Board = number[];
 type GameResult = { winner: number; cells: [number, number][] } | "draw" | null;
 type LastMove = { row: number; col: number; player: number } | null;
+type DifficultyLevel = "Easy" | "Medium" | "Hard" | "Impossible";
+
+// ── Difficulty configuration ────────────────────────────────────────────────
+// Easy/Medium can blunder or skip blocks on purpose. Hard rarely does.
+// Impossible NEVER blunders, ALWAYS blocks/wins immediately, and searches
+// as deep as time allows via iterative deepening — it cannot be beaten.
+const DIFFICULTIES: Record<DifficultyLevel, { maxDepth: number; timeMs: number; blockChance: number; randomChance: number }> = {
+  Easy:       { maxDepth: 2,  timeMs: 150,  blockChance: 0.45, randomChance: 0.40 },
+  Medium:     { maxDepth: 4,  timeMs: 300,  blockChance: 0.80, randomChance: 0.15 },
+  Hard:       { maxDepth: 7,  timeMs: 700,  blockChance: 1.00, randomChance: 0.03 },
+  Impossible: { maxDepth: 13, timeMs: 1600, blockChance: 1.00, randomChance: 0 },
+};
+const DIFFICULTY_ORDER: DifficultyLevel[] = ["Easy", "Medium", "Hard", "Impossible"];
 
 const idx = (r: number, c: number) => r * COLS + c;
 const createBoard = (): Board => new Array(ROWS * COLS).fill(EMPTY);
@@ -88,7 +100,23 @@ const staticScore = (b: Board): number => {
 
 const COL_ORDER = [3,2,4,1,5,0,6];
 
-const minimax = (b: Board, depth: number, alpha: number, beta: number, maximizing: boolean): { score: number; col?: number } => {
+// ── Search engine ────────────────────────────────────────────────────────────
+// Thrown when the iterative-deepening time budget runs out, so a deep,
+// incomplete search unwinds quickly instead of freezing the tab.
+class TimeUp extends Error {}
+let nodeCount = 0;
+
+const minimax = (
+  b: Board,
+  depth: number,
+  alpha: number,
+  beta: number,
+  maximizing: boolean,
+  deadline?: number
+): { score: number; col?: number } => {
+  nodeCount++;
+  if (deadline && (nodeCount & 511) === 0 && performance.now() > deadline) throw new TimeUp();
+
   const valid = COL_ORDER.filter(c => b[idx(0,c)] === EMPTY);
   if (!valid.length) return { score: 0 };
   if (depth === 0) return { score: staticScore(b) };
@@ -112,7 +140,7 @@ const minimax = (b: Board, depth: number, alpha: number, beta: number, maximizin
       let score: number;
       if (win) score = 1000000 + depth;
       else if (!getValidCols(b).length) score = 0;
-      else score = minimax(b, depth-1, alpha, beta, false).score;
+      else score = minimax(b, depth-1, alpha, beta, false, deadline).score;
       undrop(b, col, r);
       if (score > best.score) best = { score, col };
       alpha = Math.max(alpha, score);
@@ -127,7 +155,7 @@ const minimax = (b: Board, depth: number, alpha: number, beta: number, maximizin
       let score: number;
       if (win) score = -1000000 - depth;
       else if (!getValidCols(b).length) score = 0;
-      else score = minimax(b, depth-1, alpha, beta, true).score;
+      else score = minimax(b, depth-1, alpha, beta, true, deadline).score;
       undrop(b, col, r);
       if (score < best.score) best = { score, col };
       beta = Math.min(beta, score);
@@ -137,12 +165,73 @@ const minimax = (b: Board, depth: number, alpha: number, beta: number, maximizin
   }
 };
 
-const getBotMove = (board: Board): number => {
+// Iterative deepening: search depth 1, 2, 3... keeping the best move from the
+// last *fully completed* depth, until the time budget expires or maxDepth is
+// hit. A fully-solved line (score past the "forced win" threshold) short-
+// circuits immediately — no need to search deeper than a proven win.
+const iterativeDeepen = (b: Board, maxDepth: number, timeMs: number): number => {
+  const deadline = performance.now() + timeMs;
+  const fallback = COL_ORDER.find(c => b[idx(0, c)] === EMPTY) ?? 3;
+  let bestCol = fallback;
+  for (let d = 1; d <= maxDepth; d++) {
+    try {
+      const result = minimax(b, d, -Infinity, Infinity, true, deadline);
+      if (result.col !== undefined) bestCol = result.col;
+      if (Math.abs(result.score) >= 900000) break;
+    } catch (e) {
+      if (e instanceof TimeUp) break;
+      throw e;
+    }
+  }
+  return bestCol;
+};
+
+const pickWeightedRandom = (cols: number[]): number => {
+  // Bias randomness toward the center so "blunders" still look plausible.
+  const weights = cols.map(c => 4 - Math.abs(c - 3));
+  const total = weights.reduce((a, w) => a + w, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < cols.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return cols[i];
+  }
+  return cols[cols.length - 1];
+};
+
+const getBotMove = (board: Board, difficulty: DifficultyLevel): number => {
+  const cfg = DIFFICULTIES[difficulty];
   const b = cloneBoard(board);
-  for (const c of getValidCols(b)) { const r=dropMut(b,c,BOT);   const w=checkWinAt(b,r,c,BOT);   undrop(b,c,r); if(w) return c; }
-  for (const c of getValidCols(b)) { const r=dropMut(b,c,HUMAN); const w=checkWinAt(b,r,c,HUMAN); undrop(b,c,r); if(w) return c; }
-  const res = minimax(b, DEPTH, -Infinity, Infinity, true);
-  return res.col ?? getValidCols(board)[0];
+  const valid = COL_ORDER.filter(c => b[idx(0, c)] === EMPTY);
+
+  // Always take an immediate win, at every difficulty.
+  for (const c of valid) {
+    const r = dropMut(b, c, BOT);
+    const w = checkWinAt(b, r, c, BOT);
+    undrop(b, c, r);
+    if (w) return c;
+  }
+  // Block an immediate loss, unless the difficulty rolls a deliberate miss.
+  if (Math.random() < cfg.blockChance) {
+    for (const c of valid) {
+      const r = dropMut(b, c, HUMAN);
+      const w = checkWinAt(b, r, c, HUMAN);
+      undrop(b, c, r);
+      if (w) return c;
+    }
+  }
+  // Occasional random move for lower difficulties only (never on Impossible).
+  if (cfg.randomChance > 0 && Math.random() < cfg.randomChance) {
+    return pickWeightedRandom(valid);
+  }
+
+  nodeCount = 0;
+  return iterativeDeepen(b, cfg.maxDepth, cfg.timeMs);
+};
+
+const formatTime = (totalSeconds: number): string => {
+  const m = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
+  const s = Math.floor(totalSeconds % 60).toString().padStart(2, "0");
+  return `${m}:${s}`;
 };
 
 const NUM_PARTICLES = 18;
@@ -161,15 +250,23 @@ const isWin  = (r: GameResult): r is { winner: number; cells: [number,number][] 
 const isDraw = (r: GameResult): r is "draw" => r === "draw";
 
 export default function Connect4() {
+  const [startingPlayer, setStartingPlayer] = useState<number>(HUMAN);
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>("Impossible");
   const [board,     setBoard]     = useState<Board>(() => createBoard());
-  const [turn,      setTurn]      = useState<number>(HUMAN);
+  const [turn,      setTurn]      = useState<number>(startingPlayer);
   const [result,    setResult]    = useState<GameResult>(null);
   const [hoverCol,  setHoverCol]  = useState<number | null>(null);
   const [thinking,  setThinking]  = useState(false);
   const [lastMove,  setLastMove]  = useState<LastMove>(null);
   const [score,     setScore]     = useState({ you: 0, bot: 0 });
   const [moveCount, setMoveCount] = useState(0);
+  const [humanSeconds, setHumanSeconds] = useState(0);
+  const [botSeconds,   setBotSeconds]   = useState(0);
   const pendingBot = useRef(false);
+  // Bumped on every reset. A bot move that was mid-computation when the
+  // reset happened checks this before applying itself, so a stale move can
+  // never land on a board the user already cleared.
+  const gameId = useRef(0);
 
   const tryFinalize = (b: Board, row: number, col: number, player: number): boolean => {
     const winCells = checkWinAt(b, row, col, player);
@@ -197,9 +294,19 @@ export default function Connect4() {
     if (turn !== BOT || result || pendingBot.current) return;
     pendingBot.current = true;
     setThinking(true);
+    const myGameId = gameId.current;
+
     setTimeout(() => {
+      // The game was reset (or a new one started) while this was computing —
+      // discard the result instead of dropping a phantom piece on the
+      // player's fresh board.
+      if (myGameId !== gameId.current) return;
+
       const snap = cloneBoard(board);
-      const col  = getBotMove(snap);
+      const col  = getBotMove(snap, difficulty);
+
+      if (myGameId !== gameId.current) return; // re-check post-search, just in case
+
       const b    = cloneBoard(snap);
       const row  = dropMut(b, col, BOT);
       setBoard(b);
@@ -209,17 +316,38 @@ export default function Connect4() {
       pendingBot.current = false;
       if (!tryFinalize(b, row, col, BOT)) setTurn(HUMAN);
     }, 60);
+  }, [turn, result, difficulty]);
+
+  // Chess-clock style per-player timers. Only the side to move ticks, and
+  // both pause the instant the game ends.
+  useEffect(() => {
+    if (result) return;
+    const iv = setInterval(() => {
+      if (turn === HUMAN) setHumanSeconds(s => s + 1);
+      else setBotSeconds(s => s + 1);
+    }, 1000);
+    return () => clearInterval(iv);
   }, [turn, result]);
 
-  const reset = () => {
+  const startNewGame = (firstPlayer: number) => {
+    gameId.current += 1;
     pendingBot.current = false;
     setBoard(createBoard());
-    setTurn(HUMAN);
+    setTurn(firstPlayer);
     setResult(null);
     setHoverCol(null);
     setThinking(false);
     setLastMove(null);
     setMoveCount(0);
+    setHumanSeconds(0);
+    setBotSeconds(0);
+  };
+
+  const reset = () => startNewGame(startingPlayer);
+
+  const chooseStartingPlayer = (player: number) => {
+    setStartingPlayer(player);
+    startNewGame(player);
   };
 
   const winSet = new Set(
@@ -267,17 +395,82 @@ export default function Connect4() {
       {/* Title */}
       <div style={{ textAlign:"center", marginBottom:"14px", position:"relative", zIndex:1 }}>
         <div style={{ fontSize:"clamp(20px,6vw,46px)", fontWeight:900, letterSpacing:"0.2em", background:"linear-gradient(135deg,#ff6b6b 0%,#c084fc 45%,#60a5fa 100%)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", textTransform:"uppercase" }}>CONNECT FOUR</div>
-        <div style={{ color:"#4a3060", fontSize:"9px", letterSpacing:"0.35em", marginTop:"3px" }}>DEPTH {DEPTH} · ALPHA-BETA · KILLER ORDERING</div>
+        <div style={{ color:"#4a3060", fontSize:"9px", letterSpacing:"0.35em", marginTop:"3px" }}>ALPHA-BETA · KILLER ORDERING · ITERATIVE DEEPENING</div>
+      </div>
+
+      {/* Difficulty selector */}
+      <div style={{ display:"flex", gap:"6px", marginBottom:"10px", position:"relative", zIndex:1, flexWrap:"wrap", justifyContent:"center" }}>
+        {DIFFICULTY_ORDER.map(level => {
+          const active = level === difficulty;
+          const isImpossible = level === "Impossible";
+          return (
+            <button
+              key={level}
+              onClick={() => setDifficulty(level)}
+              disabled={thinking}
+              style={{
+                padding:"6px 14px", fontSize:"10px", letterSpacing:"0.14em", textTransform:"uppercase",
+                fontFamily:"'Courier New',monospace", fontWeight:700, borderRadius:"20px",
+                cursor: thinking ? "default" : "pointer",
+                border:`1px solid ${active ? (isImpossible ? "#be123c" : "#6366f1aa") : "#ffffff14"}`,
+                background: active ? (isImpossible ? "#be123c22" : "#6366f122") : "transparent",
+                color: active ? (isImpossible ? "#fda4af" : "#a5b4fc") : "#6b6890",
+                transition:"all 0.15s", opacity: thinking ? 0.5 : 1,
+              }}
+            >
+              {level}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* First-move selector */}
+      <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"12px", position:"relative", zIndex:1 }}>
+        <span style={{ fontSize:"8px", letterSpacing:"0.3em", color:"#4a3060" }}>FIRST MOVE</span>
+        <div style={{ display:"flex", gap:"6px" }}>
+          {([[HUMAN,"You"],[BOT,"Bot"]] as [number,string][]).map(([p,label]) => {
+            const active = startingPlayer === p;
+            return (
+              <button
+                key={label}
+                onClick={() => chooseStartingPlayer(p)}
+                disabled={thinking}
+                title={`Start every new game with ${label} moving first`}
+                style={{
+                  padding:"5px 12px", fontSize:"10px", letterSpacing:"0.12em", textTransform:"uppercase",
+                  fontFamily:"'Courier New',monospace", fontWeight:700, borderRadius:"20px",
+                  cursor: thinking ? "default" : "pointer",
+                  border:`1px solid ${active ? "#38bdf8aa" : "#ffffff14"}`,
+                  background: active ? "#38bdf822" : "transparent",
+                  color: active ? "#7dd3fc" : "#6b6890",
+                  transition:"all 0.15s", opacity: thinking ? 0.5 : 1,
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Scoreboard */}
-      <div style={{ display:"flex", marginBottom:"10px", position:"relative", zIndex:1, border:"1px solid #ffffff0f", borderRadius:"6px", overflow:"hidden", background:"rgba(0,0,0,0.35)", backdropFilter:"blur(8px)" }}>
+      <div style={{ display:"flex", marginBottom:"8px", position:"relative", zIndex:1, border:"1px solid #ffffff0f", borderRadius:"6px", overflow:"hidden", background:"rgba(0,0,0,0.35)", backdropFilter:"blur(8px)" }}>
         {([ ["YOU", score.you, "#60a5fa", "#1e3a5f22"], ["MOVES", moveCount, "#a78bfa", "#2d1b6922"], ["BOT", score.bot, "#f87171", "#5f1e1e22"] ] as [string,number,string,string][]).map(([label,val,color,bg], i) => (
           <div key={label} style={{ padding:"7px 18px", textAlign:"center", background:bg, borderRight:i<2?"1px solid #ffffff0a":"none" }}>
             <div style={{ color:"#ffffff33", fontSize:"8px", letterSpacing:"0.3em" }}>{label}</div>
             <div style={{ color, fontSize:"16px", fontWeight:900, lineHeight:1.2 }}>{val}</div>
           </div>
         ))}
+      </div>
+
+      {/* Timers */}
+      <div style={{ display:"flex", gap:"16px", marginBottom:"10px", position:"relative", zIndex:1, fontSize:"11px", letterSpacing:"0.1em" }}>
+        <span style={{ color: turn===HUMAN && !result ? "#93c5fd" : "#3a3450", fontWeight: turn===HUMAN && !result ? 700 : 400, transition:"color 0.2s" }}>
+          ⏱ YOU {formatTime(humanSeconds)}
+        </span>
+        <span style={{ color: turn===BOT && !result ? "#fca5a5" : "#3a3450", fontWeight: turn===BOT && !result ? 700 : 400, transition:"color 0.2s" }}>
+          ⏱ BOT {formatTime(botSeconds)}
+        </span>
       </div>
 
       {/* Status */}
