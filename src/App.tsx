@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { CSSProperties } from "react";
-import "./Connect4.css";
+import "./assets/Connect4.css";
 
 const ROWS = 6;
 const COLS = 7;
