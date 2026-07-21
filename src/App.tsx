@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import type { CSSProperties } from "react";
 import "./Connect4.css";
 
 const ROWS = 6;
@@ -418,7 +419,7 @@ export default function Connect4() {
     `c4-seg-btn ${sm ? "c4-seg-btn--sm" : ""} ${active ? `c4-seg-btn--active-${color}` : ""}`;
 
   return (
-    <div className="c4-root" style={{ ["--accent" as any]: accentColor }}>
+    <div className="c4-root" style={{ "--accent": accentColor } as CSSProperties}>
       <div className="c4-bg-glow" />
 
       {/* Header */}
@@ -551,7 +552,7 @@ export default function Connect4() {
                       hovering ? "c4-cell--hovering" : "",
                       isLast && cell!==EMPTY ? "c4-cell--last-move" : "",
                     ].join(" ")}
-                    style={{ ["--glow" as any]: cell===HUMAN ? (cellIsWin?GREEN:BLUE) : cell===BOT ? (cellIsWin?"#d6392f":RED) : "transparent" }}
+                    style={{ "--glow": cell===HUMAN ? (cellIsWin?GREEN:BLUE) : cell===BOT ? (cellIsWin?"#d6392f":RED) : "transparent" } as CSSProperties}
                   >
                     {cell !== EMPTY && <div className={pieceClass} />}
                   </div>
@@ -570,7 +571,7 @@ export default function Connect4() {
 
       {/* Game-over card */}
       {result && (
-        <div className="c4-overlay" onClick={reset} style={{ ["--overlay" as any]: overlayColor }}>
+        <div className="c4-overlay" onClick={reset} style={{ "--overlay": overlayColor } as CSSProperties}>
           <div className="c4-overlay-card">
             <div className="c4-overlay-title">{overlayLabel}</div>
             <div className="c4-overlay-sub">{overlaySub}</div>
